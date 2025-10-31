@@ -17,7 +17,22 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
 
   const startCamera = useCallback(async () => {
     try {
+      console.log('Intentando iniciar cámara...');
+      console.log('videoRef.current:', videoRef.current);
+      
+      if (!videoRef.current) {
+        console.error('videoRef.current es null - el elemento video no está disponible');
+        setError('Error: Elemento de video no disponible. Intenta usar el botón manual.');
+        return;
+      }
+      
       setError('');
+      
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('API de cámara no disponible');
+      }
+
+      console.log('Solicitando acceso a la cámara...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -27,10 +42,18 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
         audio: false
       });
 
+      console.log('Stream obtenido:', stream);
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        console.log('Stream asignado al video element');
         setIsStreaming(true);
         setHasPermission(true);
+      } else {
+        console.error('videoRef.current se volvió null después de obtener el stream');
+        // Clean up the stream if video element is not available
+        stream.getTracks().forEach(track => track.stop());
+        setError('Error: Elemento de video no disponible después de obtener permisos.');
       }
     } catch (err) {
       console.error('Error accessing camera:', err);
@@ -98,8 +121,17 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
 
   // Auto-start camera when component mounts
   useEffect(() => {
-    if (isMounted && typeof window !== 'undefined' && navigator.mediaDevices) {
-      startCamera();
+    console.log('Effect ejecutándose - isMounted:', isMounted);
+    
+    if (isMounted) {
+      console.log('Componente montado, intentando iniciar cámara...');
+      // Add a small delay to ensure video element is fully mounted
+      const timer = setTimeout(() => {
+        console.log('Timer ejecutándose, videoRef.current:', videoRef.current);
+        startCamera();
+      }, 300);
+      
+      return () => clearTimeout(timer);
     }
   }, [isMounted, startCamera]);
 
@@ -172,6 +204,23 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
         </div>
 
         <div className="p-8">
+          {/* Video element - always present for ref, visibility controlled by isStreaming */}
+          <div className={`relative bg-gray-900 rounded-xl overflow-hidden shadow-inner ${isStreaming ? 'block mb-6' : 'hidden'}`}>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-auto max-h-[500px] object-cover"
+            />
+            {isStreaming && (
+              <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2">
+                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                EN VIVO
+              </div>
+            )}
+          </div>
+
           {error && (
             <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
               <div className="flex items-center gap-3 mb-3">
@@ -197,50 +246,53 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
 
           {!isStreaming && !capturedPhoto && !error && (
             <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mb-4"></div>
-              <p className="text-gray-600 dark:text-gray-400 text-lg">Iniciando cámara profesional...</p>
-              <p className="text-gray-500 dark:text-gray-500 text-sm mt-2">Preparando captura de alta calidad</p>
+              <div className="mb-8">
+                <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent"></div>
+                </div>
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                  Iniciando Cámara...
+                </h3>
+                <p className="text-gray-600 dark:text-gray-400 mb-6">
+                  Solicitando permisos de cámara. Por favor, permite el acceso.
+                </p>
+              </div>
+              
+              <button
+                onClick={startCamera}
+                className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h6m2 5H7a2 2 0 01-2-2V9a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V16a2 2 0 01-2 2z" />
+                </svg>
+                Activar Cámara Manualmente
+              </button>
+              <p className="text-xs text-gray-400 mt-2">Si no se activa automáticamente</p>
             </div>
           )}
 
           {isStreaming && (
-            <div className="space-y-6">
-              <div className="relative bg-gray-900 rounded-xl overflow-hidden shadow-inner">
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-auto max-h-[500px] object-cover"
-                />
-                <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2">
-                  <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                  EN VIVO
-                </div>
-              </div>
-              
-              <div className="flex gap-4 justify-center flex-wrap">
-                <button
-                  onClick={capturePhoto}
-                  className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                  Capturar Foto
-                </button>
-                <button
-                  onClick={stopCamera}
-                  className="px-6 py-4 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-xl transition-all flex items-center gap-3"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
-                  </svg>
-                  Detener
-                </button>
-              </div>
+            <div className="flex gap-4 justify-center flex-wrap">
+              <button
+                onClick={capturePhoto}
+                className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                Capturar Foto
+              </button>
+              <button
+                onClick={stopCamera}
+                className="px-6 py-4 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-xl transition-all flex items-center gap-3"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
+                </svg>
+                Detener
+              </button>
             </div>
           )}
 
@@ -252,37 +304,35 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                   alt="Fotografía capturada"
                   className="w-full h-auto max-h-[500px] object-cover"
                 />
-                <div className="absolute top-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                  CAPTURADA
-                </div>
               </div>
               
-              <div className="flex gap-4 justify-center flex-wrap">
-                <button
-                  onClick={resetPhoto}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all flex items-center gap-3"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  </svg>
-                  Nueva Captura
-                </button>
+              <div className="text-center">
                 <button
                   onClick={() => {
-                    const link = document.createElement('a');
-                    link.download = `guaicaramo-foto-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.jpg`;
-                    link.href = capturedPhoto;
-                    link.click();
+                    // Aquí puedes agregar la lógica para enviar la data
+                    console.log('Enviando data...', capturedPhoto);
+                    
+                    // Ejemplo de envío de data - puedes modificar esto según tus necesidades
+                    // fetch('/api/upload', {
+                    //   method: 'POST',
+                    //   body: JSON.stringify({ image: capturedPhoto }),
+                    //   headers: { 'Content-Type': 'application/json' }
+                    // });
+                    
+                    alert('Data enviada correctamente');
+                    
+                    // Después de enviar, limpiar la foto y volver a la cámara
+                    setCapturedPhoto('');
+                    if (!isStreaming) {
+                      startCamera();
+                    }
                   }}
-                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3"
+                  className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-bold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                   </svg>
-                  Descargar
+                  Enviar Data
                 </button>
               </div>
             </div>
