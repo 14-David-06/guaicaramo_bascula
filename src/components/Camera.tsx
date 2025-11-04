@@ -14,6 +14,8 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
   const [capturedPhoto, setCapturedPhoto] = useState<string>('');
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
 
   const startCamera = useCallback(async () => {
     try {
@@ -109,11 +111,54 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
 
   const resetPhoto = useCallback(() => {
     setCapturedPhoto('');
+    setAnalysisResult(null);
     // Automatically restart camera after resetting photo
     if (!isStreaming) {
       startCamera();
     }
   }, [isStreaming, startCamera]);
+
+  const analyzeImage = useCallback(async (imageDataUrl: string) => {
+    try {
+      setIsAnalyzing(true);
+      setError('');
+      
+      console.log('Enviando imagen para análisis...');
+      
+      const response = await fetch('/api/analyze-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ image: imageDataUrl }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log('Análisis completado:', data.extractedInfo);
+        setAnalysisResult(data.extractedInfo);
+        
+        // Notificar al componente padre si existe callback
+        if (onPhotoCapture) {
+          onPhotoCapture(data.extractedInfo);
+        }
+      } else {
+        throw new Error(data.error || 'Error en el análisis');
+      }
+      
+    } catch (error) {
+      console.error('Error al analizar imagen:', error);
+      setError(`Error al analizar la imagen: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [onPhotoCapture]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -306,35 +351,78 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                 />
               </div>
               
-              <div className="text-center">
-                <button
-                  onClick={() => {
-                    // Aquí puedes agregar la lógica para enviar la data
-                    console.log('Enviando data...', capturedPhoto);
+              {!analysisResult && !isAnalyzing && (
+                <div className="text-center">
+                  <button
+                    onClick={() => analyzeImage(capturedPhoto)}
+                    disabled={isAnalyzing}
+                    className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
+                  >
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                    Enviar Data
+                  </button>
+                </div>
+              )}
+
+              {isAnalyzing && (
+                <div className="text-center py-8">
+                  <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-green-600 border-t-transparent mb-4"></div>
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                    Analizando Imagen...
+                  </h3>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    La IA está extrayendo toda la información de la imagen
+                  </p>
+                </div>
+              )}
+
+              {analysisResult && (
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-8 h-8 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+                      <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <h3 className="text-lg font-semibold text-green-800 dark:text-green-200">
+                      Información Extraída
+                    </h3>
+                  </div>
+                  
+                  <div className="bg-white dark:bg-gray-800 rounded-lg p-4 mb-4">
+                    <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap overflow-x-auto">
+                      {analysisResult}
+                    </pre>
+                  </div>
+                  
+                  <div className="flex gap-3 justify-center">
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(analysisResult);
+                        alert('Información copiada al portapapeles');
+                      }}
+                      className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all flex items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      Copiar
+                    </button>
                     
-                    // Ejemplo de envío de data - puedes modificar esto según tus necesidades
-                    // fetch('/api/upload', {
-                    //   method: 'POST',
-                    //   body: JSON.stringify({ image: capturedPhoto }),
-                    //   headers: { 'Content-Type': 'application/json' }
-                    // });
-                    
-                    alert('Data enviada correctamente');
-                    
-                    // Después de enviar, limpiar la foto y volver a la cámara
-                    setCapturedPhoto('');
-                    if (!isStreaming) {
-                      startCamera();
-                    }
-                  }}
-                  className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-bold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
-                  Enviar Data
-                </button>
-              </div>
+                    <button
+                      onClick={resetPhoto}
+                      className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-xl transition-all flex items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                      </svg>
+                      Nueva Foto
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
