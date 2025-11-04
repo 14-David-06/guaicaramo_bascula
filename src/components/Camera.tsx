@@ -9,13 +9,46 @@ interface CameraProps {
 export default function Camera({ onPhotoCapture }: CameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string>('');
   const [capturedPhoto, setCapturedPhoto] = useState<string>('');
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isMounted, setIsMounted] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [documentType, setDocumentType] = useState<string>('');
+
+  useEffect(() => {
+    setIsMounted(true);
+    
+    // Use a more robust auto-start approach
+    const attemptAutoStart = () => {
+      // Check if video element is available before starting
+      if (videoRef.current) {
+        console.log('Video element found, starting camera...');
+        startCamera();
+      } else {
+        console.log('Video element not ready, retrying in 500ms...');
+        // Retry a few times if element isn't ready
+        setTimeout(() => {
+          if (videoRef.current) {
+            startCamera();
+          } else {
+            console.log('Video element still not ready, giving up auto-start');
+          }
+        }, 500);
+      }
+    };
+
+    const timer = setTimeout(attemptAutoStart, 1000);
+
+    return () => {
+      clearTimeout(timer);
+      stopCamera();
+    };
+  }, []);
 
   const startCamera = useCallback(async () => {
     try {
@@ -24,6 +57,11 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
       
       if (!videoRef.current) {
         console.error('videoRef.current es null - el elemento video no está disponible');
+        // Don't set error for auto-start, just log and return silently
+        if (!isMounted) {
+          console.log('Component not mounted yet, skipping camera start');
+          return;
+        }
         setError('Error: Elemento de video no disponible. Intenta usar el botón manual.');
         return;
       }
@@ -39,7 +77,7 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
-          facingMode: 'environment' // Use back camera on mobile devices
+          facingMode: 'environment'
         },
         audio: false
       });
@@ -48,31 +86,30 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        console.log('Stream asignado al video element');
-        setIsStreaming(true);
-        setHasPermission(true);
-      } else {
-        console.error('videoRef.current se volvió null después de obtener el stream');
-        // Clean up the stream if video element is not available
-        stream.getTracks().forEach(track => track.stop());
-        setError('Error: Elemento de video no disponible después de obtener permisos.');
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play();
+          setIsStreaming(true);
+          setHasPermission(true);
+          console.log('Cámara iniciada exitosamente');
+        };
       }
-    } catch (err) {
-      console.error('Error accessing camera:', err);
+      
+    } catch (error) {
+      console.error('Error al iniciar cámara:', error);
       setHasPermission(false);
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError') {
-          setError('Se necesita acceso a la cámara para tomar fotografías. Por favor, permite el acceso y recarga la página.');
-        } else if (err.name === 'NotFoundError') {
-          setError('No se encontró ninguna cámara en el dispositivo.');
+      if (error instanceof Error) {
+        if (error.name === 'NotAllowedError') {
+          setError('Acceso a la cámara denegado. Por favor, permite el acceso a la cámara en tu navegador.');
+        } else if (error.name === 'NotFoundError') {
+          setError('No se encontró una cámara. Verifica que tu dispositivo tenga una cámara conectada.');
         } else {
-          setError('Error al acceder a la cámara: ' + err.message);
+          setError(`Error al acceder a la cámara: ${error.message}`);
         }
       } else {
-        setError('Error desconocido al acceder a la cámara.');
+        setError('Error desconocido al acceder a la cámara');
       }
     }
-  }, []);
+  }, [isMounted]);
 
   const stopCamera = useCallback(() => {
     if (videoRef.current && videoRef.current.srcObject) {
@@ -85,33 +122,40 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
   }, []);
 
   const capturePhoto = useCallback(() => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current) {
+      setError('Error: No se puede capturar la foto en este momento');
+      return;
+    }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
 
-    if (!context) return;
+    if (!context) {
+      setError('Error: No se puede procesar la imagen');
+      return;
+    }
 
-    // Set canvas dimensions to match video
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
-    // Draw the video frame to canvas
     context.drawImage(video, 0, 0);
 
-    // Convert canvas to data URL
-    const photoDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const photoDataUrl = canvas.toDataURL('image/jpeg', 0.8);
     setCapturedPhoto(photoDataUrl);
     
+    // Stop camera after capture
+    stopCamera();
+
     if (onPhotoCapture) {
       onPhotoCapture(photoDataUrl);
     }
-  }, [onPhotoCapture]);
+  }, [onPhotoCapture, stopCamera]);
 
   const resetPhoto = useCallback(() => {
     setCapturedPhoto('');
     setAnalysisResult(null);
+    setDocumentType('');
+    setError('');
     // Automatically restart camera after resetting photo
     if (!isStreaming) {
       startCamera();
@@ -122,6 +166,8 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
     try {
       setIsAnalyzing(true);
       setError('');
+      setAnalysisResult(null);
+      setDocumentType('');
       
       console.log('Enviando imagen para análisis...');
       
@@ -142,7 +188,17 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
       
       if (data.success) {
         console.log('Análisis completado:', data.extractedInfo);
-        setAnalysisResult(data.extractedInfo);
+        
+        // Intentar parsear el JSON de la respuesta
+        try {
+          const parsedInfo = JSON.parse(data.extractedInfo);
+          setAnalysisResult(parsedInfo);
+          setDocumentType(parsedInfo.tipo_documento || 'Documento no identificado');
+        } catch (parseError) {
+          // Si no se puede parsear como JSON, usar como texto
+          setAnalysisResult({ raw_text: data.extractedInfo });
+          setDocumentType('Análisis de texto');
+        }
         
         // Notificar al componente padre si existe callback
         if (onPhotoCapture) {
@@ -160,274 +216,412 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
     }
   }, [onPhotoCapture]);
 
-  useEffect(() => {
-    setIsMounted(true);
+  const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validar que sea una imagen
+    if (!file.type.startsWith('image/')) {
+      setError('Por favor selecciona un archivo de imagen válido');
+      return;
+    }
+
+    // Validar tamaño (máximo 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('El archivo es muy grande. Por favor selecciona una imagen menor a 10MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      if (result) {
+        setCapturedPhoto(result);
+        setError('');
+        // Reset analysis
+        setAnalysisResult(null);
+        setDocumentType('');
+      }
+    };
+    reader.onerror = () => {
+      setError('Error al leer el archivo');
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset the input value
+    if (event.target) {
+      event.target.value = '';
+    }
   }, []);
 
-  // Auto-start camera when component mounts
-  useEffect(() => {
-    console.log('Effect ejecutándose - isMounted:', isMounted);
-    
-    if (isMounted) {
-      console.log('Componente montado, intentando iniciar cámara...');
-      // Add a small delay to ensure video element is fully mounted
-      const timer = setTimeout(() => {
-        console.log('Timer ejecutándose, videoRef.current:', videoRef.current);
-        startCamera();
-      }, 300);
-      
-      return () => clearTimeout(timer);
+  const triggerFileUpload = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const renderAnalysisResults = () => {
+    if (!analysisResult) return null;
+
+    const data = analysisResult;
+
+    // Renderizar documento de MALLAS
+    if (data.tipo_documento && data.tipo_documento.includes('Mallas')) {
+      return (
+        <div className="space-y-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded">
+            <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">📄 Información General</h4>
+            <div className="text-sm space-y-1">
+              <p><strong>Fecha:</strong> {data.fecha || 'N/A'}</p>
+              <p><strong>Conductor:</strong> {data.conductor || 'N/A'}</p>
+              <p><strong>Placa:</strong> {data.placa_vehiculo || 'N/A'}</p>
+              <p><strong>Código Tractor:</strong> {data.codigo_tractor || 'N/A'}</p>
+              <p><strong>Reporta:</strong> {data.reporta || 'N/A'}</p>
+            </div>
+          </div>
+          
+          <div className="bg-purple-50 dark:bg-purple-900/20 p-3 rounded">
+            <h4 className="font-semibold text-purple-800 dark:text-purple-200 mb-2">📊 Totales</h4>
+            <div className="text-sm space-y-1">
+              <p><strong>Peso Neto Campo:</strong> {data.totales?.peso_neto_campo || 'N/A'}</p>
+              <p><strong>Total Racimos:</strong> {data.totales?.total_racimos || 'N/A'}</p>
+            </div>
+          </div>
+          
+          {data.mallas && data.mallas.length > 0 && (
+            <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded">
+              <h4 className="font-semibold text-yellow-800 dark:text-yellow-200 mb-2">🥭 Mallas Registradas</h4>
+              <div className="text-sm">
+                <p><strong>Total mallas:</strong> {data.mallas.length}</p>
+                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+                  {data.mallas.slice(0, 3).map((malla: any, index: number) => (
+                    <div key={index} className="border-l-2 border-yellow-400 pl-2">
+                      <p><strong>Malla {malla.numero_malla}:</strong> {malla.pesos ? malla.pesos.join(', ') : 'Sin pesos'}</p>
+                    </div>
+                  ))}
+                  {data.mallas.length > 3 && <p className="text-gray-500">... y {data.mallas.length - 3} mallas más</p>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
     }
-  }, [isMounted, startCamera]);
+    
+    // Renderizar documento de FRUTO NORMAL
+    else if (data.tipo_documento && data.tipo_documento.includes('Control Diario Cargue de Fruto')) {
+      return (
+        <div className="space-y-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded">
+            <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">📄 Información General</h4>
+            <div className="text-sm space-y-1">
+              <p><strong>Fecha:</strong> {data.fecha || 'N/A'}</p>
+              <p><strong>Conductor:</strong> {data.conductor || 'N/A'}</p>
+              <p><strong>Placa:</strong> {data.placa_vehiculo || 'N/A'}</p>
+              <p><strong>Código Tractor:</strong> {data.codigo_tractor || 'N/A'}</p>
+              <p><strong>Reporta:</strong> {data.reporta || 'N/A'}</p>
+            </div>
+          </div>
+          
+          <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded">
+            <h4 className="font-semibold text-green-800 dark:text-green-200 mb-2">⚖️ Totales de Peso</h4>
+            <div className="text-sm space-y-1">
+              <p><strong>Total Peso Bruto:</strong> {data.totales?.total_peso_bruto || 'N/A'}</p>
+              <p><strong>Total Peso Neto:</strong> {data.totales?.total_peso_neto || 'N/A'}</p>
+              <p><strong>Total Canastillas:</strong> {data.totales?.total_canastillas || 'N/A'}</p>
+            </div>
+          </div>
+          
+          {data.registros && data.registros.length > 0 && (
+            <div className="bg-orange-50 dark:bg-orange-900/20 p-3 rounded">
+              <h4 className="font-semibold text-orange-800 dark:text-orange-200 mb-2">📦 Registros de Carga</h4>
+              <div className="text-sm">
+                <p><strong>Total registros:</strong> {data.registros.length}</p>
+                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
+                  {data.registros.slice(0, 3).map((registro: any, index: number) => (
+                    <div key={index} className="border-l-2 border-orange-400 pl-2">
+                      <p><strong>Registro {registro.numero_registro || index + 1}:</strong></p>
+                      <p className="text-xs">Bruto: {registro.peso_bruto} | Neto: {registro.peso_neto} | Canastillas: {registro.canastillas}</p>
+                    </div>
+                  ))}
+                  {data.registros.length > 3 && <p className="text-gray-500">... y {data.registros.length - 3} registros más</p>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    
+    // Formato genérico para otros tipos de documentos
+    else {
+      return (
+        <div className="space-y-4">
+          <div className="bg-gray-50 dark:bg-gray-900/20 p-3 rounded">
+            <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">📄 Información Extraída</h4>
+            <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+              {JSON.stringify(data, null, 2)}
+            </pre>
+          </div>
+        </div>
+      );
+    }
+  };
 
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, [stopCamera]);
-
-  // Don't render anything until mounted (prevents hydration mismatch)
   if (!isMounted) {
-    return (
-      <div className="w-full max-w-4xl mx-auto">
-        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-          <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
-            <h2 className="text-2xl font-bold text-center text-white flex items-center justify-center gap-3">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              Cámara Profesional
-            </h2>
-          </div>
-          <div className="p-8">
-            <div className="text-center py-12">
-              <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mb-4"></div>
-              <p className="text-gray-600 dark:text-gray-400 text-lg">Cargando sistema...</p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    return (
-      <div className="w-full max-w-4xl mx-auto">
-        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-          <div className="bg-gradient-to-r from-red-600 to-red-700 p-6">
-            <h2 className="text-2xl font-bold text-center text-white flex items-center justify-center gap-3">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Error de Compatibilidad
-            </h2>
-          </div>
-          <div className="p-8">
-            <div className="text-center">
-              <p className="text-red-600 dark:text-red-400 text-lg">
-                Tu navegador no soporta el acceso a la cámara. Por favor, usa un navegador moderno como Chrome, Firefox o Safari.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
+    return <div>Cargando cámara...</div>;
   }
 
   return (
-    <div className="w-full max-w-4xl mx-auto">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
-          <h2 className="text-2xl font-bold text-center text-white flex items-center justify-center gap-3">
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Cámara Profesional
-          </h2>
-        </div>
+    <div className="w-full max-w-4xl mx-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
+        <h2 className="text-2xl font-bold text-white mb-2">📸 Análisis de Documentos</h2>
+        <p className="text-blue-100">Captura o carga imágenes de control de fruto y mallas para análisis automático</p>
+      </div>
 
-        <div className="p-8">
-          {/* Video element - always present for ref, visibility controlled by isStreaming */}
-          <div className={`relative bg-gray-900 rounded-xl overflow-hidden shadow-inner ${isStreaming ? 'block mb-6' : 'hidden'}`}>
+      <div className="p-6">
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileUpload}
+          className="hidden"
+        />
+
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-red-100 dark:bg-red-900 rounded-full flex items-center justify-center">
+                <svg className="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-red-800 dark:text-red-200">Error</h3>
+                <p className="text-red-700 dark:text-red-300">{error}</p>
+              </div>
+            </div>
+            <div className="mt-4 flex gap-3">
+              <button
+                onClick={startCamera}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-all flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                </svg>
+                Intentar Cámara
+              </button>
+              <button
+                onClick={triggerFileUpload}
+                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-medium rounded-lg transition-all flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                Cargar Archivo
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Camera Section */}
+        {!capturedPhoto && (
+          <div className="relative bg-gray-100 dark:bg-gray-800 rounded-xl overflow-hidden mb-6">
+            {/* Video element always present but conditionally shown */}
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
-              className="w-full h-auto max-h-[500px] object-cover"
+              className={`w-full h-auto max-h-96 object-cover ${isStreaming ? 'block' : 'hidden'}`}
             />
-            {isStreaming && (
-              <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2">
-                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                EN VIVO
-              </div>
-            )}
-          </div>
-
-          {error && (
-            <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-8 h-8 bg-red-100 dark:bg-red-900 rounded-full flex items-center justify-center">
-                  <svg className="w-4 h-4 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            
+            {isStreaming ? (
+              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
+                <button
+                  onClick={capturePhoto}
+                  className="w-16 h-16 bg-white hover:bg-gray-100 border-4 border-blue-500 rounded-full shadow-lg transition-all transform hover:scale-105 flex items-center justify-center"
+                >
+                  <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                   </svg>
-                </div>
-                <h3 className="text-red-800 dark:text-red-200 font-semibold">Error de Cámara</h3>
+                </button>
               </div>
-              <p className="text-red-700 dark:text-red-300 mb-4">{error}</p>
-              <button
-                onClick={startCamera}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Reintentar
-              </button>
-            </div>
-          )}
-
-          {!isStreaming && !capturedPhoto && !error && (
-            <div className="text-center py-12">
-              <div className="mb-8">
-                <div className="w-20 h-20 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-600 border-t-transparent"></div>
-                </div>
-                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                  Iniciando Cámara...
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400 mb-6">
-                  Solicitando permisos de cámara. Por favor, permite el acceso.
-                </p>
-              </div>
-              
-              <button
-                onClick={startCamera}
-                className="px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h6m2 5H7a2 2 0 01-2-2V9a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V16a2 2 0 01-2 2z" />
-                </svg>
-                Activar Cámara Manualmente
-              </button>
-              <p className="text-xs text-gray-400 mt-2">Si no se activa automáticamente</p>
-            </div>
-          )}
-
-          {isStreaming && (
-            <div className="flex gap-4 justify-center flex-wrap">
-              <button
-                onClick={capturePhoto}
-                className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-semibold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                Capturar Foto
-              </button>
-              <button
-                onClick={stopCamera}
-                className="px-6 py-4 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-xl transition-all flex items-center gap-3"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10h6v4H9z" />
-                </svg>
-                Detener
-              </button>
-            </div>
-          )}
-
-          {capturedPhoto && (
-            <div className="space-y-6">
-              <div className="relative bg-gray-900 rounded-xl overflow-hidden shadow-inner">
-                <img
-                  src={capturedPhoto}
-                  alt="Fotografía capturada"
-                  className="w-full h-auto max-h-[500px] object-cover"
-                />
-              </div>
-              
-              {!analysisResult && !isAnalyzing && (
+            ) : (
+              <div className="h-64 flex items-center justify-center">
                 <div className="text-center">
-                  <button
-                    onClick={() => analyzeImage(capturedPhoto)}
-                    disabled={isAnalyzing}
-                    className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
-                  >
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  <div className="w-16 h-16 bg-gray-300 dark:bg-gray-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                     </svg>
-                    Enviar Data
-                  </button>
-                </div>
-              )}
-
-              {isAnalyzing && (
-                <div className="text-center py-8">
-                  <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-green-600 border-t-transparent mb-4"></div>
-                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-                    Analizando Imagen...
-                  </h3>
-                  <p className="text-gray-600 dark:text-gray-400">
-                    La IA está extrayendo toda la información de la imagen
-                  </p>
-                </div>
-              )}
-
-              {analysisResult && (
-                <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-8 h-8 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
-                      <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
-                    <h3 className="text-lg font-semibold text-green-800 dark:text-green-200">
-                      Información Extraída
-                    </h3>
                   </div>
-                  
-                  <div className="bg-white dark:bg-gray-800 rounded-lg p-4 mb-4">
-                    <pre className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap overflow-x-auto">
-                      {analysisResult}
-                    </pre>
-                  </div>
-                  
+                  <p className="text-gray-600 dark:text-gray-400 mb-4">Cámara no disponible</p>
                   <div className="flex gap-3 justify-center">
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(analysisResult);
-                        alert('Información copiada al portapapeles');
-                      }}
+                      onClick={startCamera}
                       className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-all flex items-center gap-2"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1.586a1 1 0 01.707.293L13.5 12.5a1 1 0 01.293.707V14" />
                       </svg>
-                      Copiar
+                      Activar Cámara
                     </button>
-                    
                     <button
-                      onClick={resetPhoto}
-                      className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white font-semibold rounded-xl transition-all flex items-center gap-2"
+                      onClick={triggerFileUpload}
+                      className="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-semibold rounded-xl transition-all flex items-center gap-2"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                       </svg>
-                      Nueva Foto
+                      Cargar Imagen
                     </button>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            )}
+          </div>
+        )}
 
-          <canvas ref={canvasRef} style={{ display: 'none' }} />
-        </div>
+        {/* Captured Photo Section */}
+        {capturedPhoto && (
+          <div className="mb-6">
+            <div className="bg-gray-100 dark:bg-gray-800 rounded-xl overflow-hidden mb-4">
+              <img
+                src={capturedPhoto}
+                alt="Foto capturada"
+                className="w-full h-auto max-h-96 object-contain"
+              />
+            </div>
+
+            {/* Analysis Loading */}
+            {isAnalyzing && (
+              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 text-center">
+                <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                <h3 className="text-lg font-semibold text-blue-800 dark:text-blue-200 mb-2">
+                  🔍 Analizando Documento...
+                </h3>
+                <p className="text-blue-600 dark:text-blue-300">
+                  La IA está extrayendo toda la información de la imagen
+                </p>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            {!analysisResult && !isAnalyzing && (
+              <div className="text-center space-y-4">
+                <button
+                  onClick={() => analyzeImage(capturedPhoto)}
+                  disabled={isAnalyzing}
+                  className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3 mx-auto"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  </svg>
+                  Enviar Data
+                </button>
+                
+                <div className="flex items-center gap-2 justify-center">
+                  <button
+                    onClick={triggerFileUpload}
+                    className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    Cambiar por archivo
+                  </button>
+                  
+                  <button
+                    onClick={resetPhoto}
+                    className="px-4 py-2 bg-gray-500 hover:bg-gray-600 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                    </svg>
+                    Tomar otra foto
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Analysis Results */}
+            {analysisResult && (
+              <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-8 h-8 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+                    <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-green-800 dark:text-green-200">
+                    📋 {documentType ? `${documentType} - Datos Extraídos` : 'Datos Extraídos'}
+                  </h3>
+                </div>
+                
+                <div className="bg-white dark:bg-gray-800 rounded-lg p-4 mb-4 max-h-96 overflow-y-auto">
+                  {renderAnalysisResults()}
+                </div>
+                
+                <div className="flex gap-3 justify-center flex-wrap">
+                  <button
+                    onClick={() => {
+                      const dataToShare = typeof analysisResult === 'object' ? JSON.stringify(analysisResult, null, 2) : analysisResult;
+                      navigator.clipboard.writeText(dataToShare);
+                      alert('📋 Información copiada al portapapeles');
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    Copiar
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      const dataToDownload = typeof analysisResult === 'object' ? JSON.stringify(analysisResult, null, 2) : analysisResult;
+                      const blob = new Blob([dataToDownload], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `control-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Descargar
+                  </button>
+                  
+                  <button
+                    onClick={triggerFileUpload}
+                    className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    Otra Imagen
+                  </button>
+                  
+                  <button
+                    onClick={resetPhoto}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                    </svg>
+                    Nueva Foto
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
       </div>
     </div>
   );
