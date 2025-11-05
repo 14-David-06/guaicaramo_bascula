@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { guaicaramoGradients, guaicaramoShadows } from '@/lib/guaicaramo-theme';
 
 interface CameraProps {
   onPhotoCapture?: (photoDataUrl: string) => void;
@@ -19,6 +20,39 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [documentType, setDocumentType] = useState<string>('');
+  const [isSending, setIsSending] = useState(false);
+  const [editableValues, setEditableValues] = useState({
+    peso_bascula: 0,
+    peso_neto_campo: 0,
+    total_racimos: 0
+  });
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [selectedDocumentType, setSelectedDocumentType] = useState<'Fruto' | 'Malla Fruto'>('Fruto');
+  const [aiDetectedType, setAiDetectedType] = useState<string>('');
+
+  // Función para enviar feedback de entrenamiento
+  const sendTrainingFeedback = useCallback(async (
+    aiDetected: string, 
+    userCorrected: string, 
+    isCorrect: boolean
+  ) => {
+    try {
+      await fetch('/api/training-feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          aiDetectedType: aiDetected,
+          userCorrectedType: userCorrected,
+          isCorrect,
+          extractedData: editableValues,
+          imageData: capturedPhoto?.length || 0
+        })
+      });
+      console.log('📚 Feedback enviado para entrenamiento');
+    } catch (error) {
+      console.warn('Error enviando feedback:', error);
+    }
+  }, [editableValues, capturedPhoto]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -53,16 +87,23 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
   const startCamera = useCallback(async () => {
     try {
       console.log('Intentando iniciar cámara...');
+      
+      // Validación temprana: verificar que el componente esté montado
+      if (!isMounted) {
+        console.log('Component not mounted yet, skipping camera start');
+        return;
+      }
+      
       console.log('videoRef.current:', videoRef.current);
       
       if (!videoRef.current) {
         console.error('videoRef.current es null - el elemento video no está disponible');
-        // Don't set error for auto-start, just log and return silently
-        if (!isMounted) {
-          console.log('Component not mounted yet, skipping camera start');
-          return;
-        }
-        setError('Error: Elemento de video no disponible. Intenta usar el botón manual.');
+        // Si el componente está montado pero el videoRef no, reintentamos después de un delay
+        setTimeout(() => {
+          if (isMounted && videoRef.current) {
+            startCamera();
+          }
+        }, 100);
         return;
       }
       
@@ -162,6 +203,33 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
     }
   }, [isStreaming, startCamera]);
 
+  // Función para comprimir imagen manteniendo calidad para lectura de números
+  const compressImage = useCallback((imageDataUrl: string, maxWidth = 800): Promise<string> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // Dimensiones optimizadas para precisión en lectura de texto
+        const ratio = Math.min(maxWidth / img.width, maxWidth / img.height);
+        canvas.width = img.width * ratio;
+        canvas.height = img.height * ratio;
+        
+        // Dibujar imagen comprimida
+        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // JPEG con mayor calidad para mejor lectura de números
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const sizeKB = Math.round(compressedDataUrl.length/1024);
+        console.log(`🗜️ Imagen súper comprimida: ${sizeKB}KB (max 600px)`);
+        resolve(compressedDataUrl);
+      };
+      
+      img.src = imageDataUrl;
+    });
+  }, []);
+
   const analyzeImage = useCallback(async (imageDataUrl: string) => {
     try {
       setIsAnalyzing(true);
@@ -169,14 +237,19 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
       setAnalysisResult(null);
       setDocumentType('');
       
-      console.log('Enviando imagen para análisis...');
+      console.log('🚀 Iniciando análisis optimizado...');
+      const startTime = Date.now();
+      
+      // Comprimir imagen para mayor velocidad
+      const compressedImage = await compressImage(imageDataUrl);
+      console.log('📐 Imagen preparada para análisis');
       
       const response = await fetch('/api/analyze-image', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ image: imageDataUrl }),
+        body: JSON.stringify({ image: compressedImage }),
       });
 
       if (!response.ok) {
@@ -185,24 +258,48 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
       }
 
       const data = await response.json();
+      const totalTime = Date.now() - startTime;
+      console.log(`✅ Análisis total completado en ${totalTime}ms`);
       
-      if (data.success) {
-        console.log('Análisis completado:', data.extractedInfo);
+      if (data.success && data.analysis) {
+        console.log('Análisis completado:', data.analysis);
+        setAnalysisResult(data.analysis);
+        setDocumentType('Documento Analizado');
         
-        // Intentar parsear el JSON de la respuesta
-        try {
-          const parsedInfo = JSON.parse(data.extractedInfo);
-          setAnalysisResult(parsedInfo);
-          setDocumentType(parsedInfo.tipo_documento || 'Documento no identificado');
-        } catch (parseError) {
-          // Si no se puede parsear como JSON, usar como texto
-          setAnalysisResult({ raw_text: data.extractedInfo });
-          setDocumentType('Análisis de texto');
+        // Usar el tipo detectado por la IA, con fallback
+        const tipoDetectado = data.tipo_detectado || 'FRUTO';
+        setAiDetectedType(tipoDetectado); // Guardar tipo detectado por IA
+        
+        if (tipoDetectado === 'MALLA FRUTO' || tipoDetectado.toLowerCase().includes('malla')) {
+          setSelectedDocumentType('Malla Fruto');
+        } else {
+          setSelectedDocumentType('Fruto');
+        }
+        
+        // Mostrar advertencia si hubo timeout
+        if (data.warning) {
+          setError(`⚠️ ${data.warning}`);
+        }
+
+        // Comentado: Mostrar advertencias de validación 
+        // if (data.validation && data.validation.warnings.length > 0) {
+        //   const confidence = (data.validation.confidence * 100).toFixed(1);
+        //   const warnings = data.validation.warnings.join('. ');
+        //   setError(`🎯 Confianza: ${confidence}% - ${warnings}`);
+        // }
+        
+        // Inicializar valores editables con los datos extraídos
+        if (data.analysis.totales) {
+          setEditableValues({
+            peso_bascula: data.analysis.totales.peso_bascula || 0,
+            peso_neto_campo: data.analysis.totales.peso_neto_campo || 0,
+            total_racimos: data.analysis.totales.total_racimos || 0
+          });
         }
         
         // Notificar al componente padre si existe callback
         if (onPhotoCapture) {
-          onPhotoCapture(data.extractedInfo);
+          onPhotoCapture(data.analysis);
         }
       } else {
         throw new Error(data.error || 'Error en el análisis');
@@ -258,112 +355,183 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
     fileInputRef.current?.click();
   }, []);
 
+  const sendToDatabase = useCallback(async () => {
+    if (!analysisResult) {
+      alert('❌ No hay datos para enviar. Primero analiza una imagen.');
+      return;
+    }
+
+    try {
+      setIsSending(true);
+      setError('');
+
+      // Usar los valores editables y el tipo de documento seleccionado
+      const dataToSend = {
+        ...analysisResult,
+        tipo_documento: selectedDocumentType === 'Malla Fruto' ? 'Control Diario Cargue de Fruto Mallas' : 'Control Diario Cargue de Fruto',
+        totales: {
+          peso_bascula: editableValues.peso_bascula,
+          peso_neto_campo: editableValues.peso_neto_campo,
+          total_racimos: editableValues.total_racimos
+        },
+        // Agregar información del tipo seleccionado para la lógica de backend
+        mallas: selectedDocumentType === 'Malla Fruto' ? [{}] : undefined
+      };
+
+      console.log('Enviando a base de datos:', dataToSend);
+
+      const response = await fetch('/api/send-to-database', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ analysisData: dataToSend }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        console.log('Respuesta de la base de datos:', result);
+        
+        // Mostrar mensaje de éxito y volver al inicio
+        setShowSuccess(true);
+        
+        // Después de 3 segundos, volver al inicio
+        setTimeout(() => {
+          resetToInitialState();
+        }, 3000);
+      } else {
+        throw new Error(result.error || 'Error en el envío');
+      }
+
+    } catch (error) {
+      console.error('Error al enviar a base de datos:', error);
+      setError(`❌ Error al enviar a la base de datos: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+    } finally {
+      setIsSending(false);
+    }
+  }, [analysisResult, editableValues]);
+
+  // Función para resetear todo al estado inicial
+  const resetToInitialState = useCallback(() => {
+    setCapturedPhoto('');
+    setAnalysisResult(null);
+    setDocumentType('');
+    setSelectedDocumentType('Fruto');
+    setAiDetectedType(''); // Limpiar tipo detectado por IA
+    setShowSuccess(false);
+    setEditableValues({
+      peso_bascula: 0,
+      peso_neto_campo: 0,
+      total_racimos: 0
+    });
+    setError('');
+    // Volver a activar la cámara solo si el componente está montado y el video ref está disponible
+    if (isMounted && videoRef.current) {
+      startCamera();
+    }
+  }, [startCamera, isMounted]);
+
   const renderAnalysisResults = () => {
     if (!analysisResult) return null;
 
     const data = analysisResult;
+    
+    // Usar el tipo de documento seleccionado por el usuario
+    const tipoPeso = selectedDocumentType;
+    
+    // Mostrar solo los 3 datos específicos requeridos
+    if (data.totales) {
+      return (
+        <div className="space-y-4">
+          {/* Dropdown para tipo de documento */}
+          <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg">
+            <label className="block text-sm font-medium text-blue-800 dark:text-blue-200 mb-2">
+              📝 Tipo de Documento:
+            </label>
+            <select
+              value={selectedDocumentType}
+              onChange={(e) => {
+                const newType = e.target.value as 'Fruto' | 'Malla Fruto';
+                const oldType = selectedDocumentType;
+                setSelectedDocumentType(newType);
+                
+                // Enviar feedback si el usuario cambió el tipo detectado por IA
+                if (aiDetectedType && oldType !== newType) {
+                  const aiTypeFormatted = aiDetectedType === 'MALLA FRUTO' ? 'Malla Fruto' : 'Fruto';
+                  sendTrainingFeedback(aiTypeFormatted, newType, false);
+                }
+              }}
+              className="w-full px-3 py-2 border border-blue-300 dark:border-blue-600 rounded-lg bg-white dark:bg-gray-800 text-blue-900 dark:text-blue-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="Fruto">Fruto</option>
+              <option value="Malla Fruto">Malla Fruto</option>
+            </select>
+          </div>
+          
+          <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg">
+            <h4 className="font-semibold text-green-800 dark:text-green-200 mb-4 text-center">📊 Totales</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border-2 border-blue-200 dark:border-blue-700">
+                <div className="text-center">
+                  <input
+                    type="number"
+                    value={editableValues.peso_bascula}
+                    onChange={(e) => setEditableValues(prev => ({...prev, peso_bascula: parseInt(e.target.value) || 0}))}
+                    className="text-2xl font-bold text-blue-600 dark:text-blue-400 bg-transparent text-center w-full border-none focus:outline-none focus:ring-2 focus:ring-blue-300 rounded"
+                  />
+                  <div className="text-sm font-medium text-gray-600 dark:text-gray-400 mt-1">
+                    Peso Báscula (kg)
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border-2 border-green-200 dark:border-green-700">
+                <div className="text-center">
+                  <input
+                    type="number"
+                    value={editableValues.peso_neto_campo}
+                    onChange={(e) => setEditableValues(prev => ({...prev, peso_neto_campo: parseInt(e.target.value) || 0}))}
+                    className="text-2xl font-bold text-green-600 dark:text-green-400 bg-transparent text-center w-full border-none focus:outline-none focus:ring-2 focus:ring-green-300 rounded"
+                  />
+                  <div className="text-sm font-medium text-gray-600 dark:text-gray-400 mt-1">
+                    Peso en Campo (kg)
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border-2 border-purple-200 dark:border-purple-700">
+                <div className="text-center">
+                  <input
+                    type="number"
+                    value={editableValues.total_racimos}
+                    onChange={(e) => setEditableValues(prev => ({...prev, total_racimos: parseInt(e.target.value) || 0}))}
+                    className="text-2xl font-bold text-purple-600 dark:text-purple-400 bg-transparent text-center w-full border-none focus:outline-none focus:ring-2 focus:ring-purple-300 rounded"
+                  />
+                  <div className="text-sm font-medium text-gray-600 dark:text-gray-400 mt-1">
+                    Total Racimos
+                  </div>
+                </div>
+              </div>
+              
+            </div>
+          </div>
+        </div>
+      );
+    }
 
-    // Renderizar documento de MALLAS
-    if (data.tipo_documento && data.tipo_documento.includes('Mallas')) {
-      return (
-        <div className="space-y-4">
-          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded">
-            <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">📄 Información General</h4>
-            <div className="text-sm space-y-1">
-              <p><strong>Fecha:</strong> {data.fecha || 'N/A'}</p>
-              <p><strong>Conductor:</strong> {data.conductor || 'N/A'}</p>
-              <p><strong>Placa:</strong> {data.placa_vehiculo || 'N/A'}</p>
-              <p><strong>Código Tractor:</strong> {data.codigo_tractor || 'N/A'}</p>
-              <p><strong>Reporta:</strong> {data.reporta || 'N/A'}</p>
-            </div>
-          </div>
-          
-          <div className="bg-purple-50 dark:bg-purple-900/20 p-3 rounded">
-            <h4 className="font-semibold text-purple-800 dark:text-purple-200 mb-2">📊 Totales</h4>
-            <div className="text-sm space-y-1">
-              <p><strong>Peso Neto Campo:</strong> {data.totales?.peso_neto_campo || 'N/A'}</p>
-              <p><strong>Total Racimos:</strong> {data.totales?.total_racimos || 'N/A'}</p>
-            </div>
-          </div>
-          
-          {data.mallas && data.mallas.length > 0 && (
-            <div className="bg-yellow-50 dark:bg-yellow-900/20 p-3 rounded">
-              <h4 className="font-semibold text-yellow-800 dark:text-yellow-200 mb-2">🥭 Mallas Registradas</h4>
-              <div className="text-sm">
-                <p><strong>Total mallas:</strong> {data.mallas.length}</p>
-                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
-                  {data.mallas.slice(0, 3).map((malla: any, index: number) => (
-                    <div key={index} className="border-l-2 border-yellow-400 pl-2">
-                      <p><strong>Malla {malla.numero_malla}:</strong> {malla.pesos ? malla.pesos.join(', ') : 'Sin pesos'}</p>
-                    </div>
-                  ))}
-                  {data.mallas.length > 3 && <p className="text-gray-500">... y {data.mallas.length - 3} mallas más</p>}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-    
-    // Renderizar documento de FRUTO NORMAL
-    else if (data.tipo_documento && data.tipo_documento.includes('Control Diario Cargue de Fruto')) {
-      return (
-        <div className="space-y-4">
-          <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded">
-            <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">📄 Información General</h4>
-            <div className="text-sm space-y-1">
-              <p><strong>Fecha:</strong> {data.fecha || 'N/A'}</p>
-              <p><strong>Conductor:</strong> {data.conductor || 'N/A'}</p>
-              <p><strong>Placa:</strong> {data.placa_vehiculo || 'N/A'}</p>
-              <p><strong>Código Tractor:</strong> {data.codigo_tractor || 'N/A'}</p>
-              <p><strong>Reporta:</strong> {data.reporta || 'N/A'}</p>
-            </div>
-          </div>
-          
-          <div className="bg-green-50 dark:bg-green-900/20 p-3 rounded">
-            <h4 className="font-semibold text-green-800 dark:text-green-200 mb-2">⚖️ Totales de Peso</h4>
-            <div className="text-sm space-y-1">
-              <p><strong>Total Peso Bruto:</strong> {data.totales?.total_peso_bruto || 'N/A'}</p>
-              <p><strong>Total Peso Neto:</strong> {data.totales?.total_peso_neto || 'N/A'}</p>
-              <p><strong>Total Canastillas:</strong> {data.totales?.total_canastillas || 'N/A'}</p>
-            </div>
-          </div>
-          
-          {data.registros && data.registros.length > 0 && (
-            <div className="bg-orange-50 dark:bg-orange-900/20 p-3 rounded">
-              <h4 className="font-semibold text-orange-800 dark:text-orange-200 mb-2">📦 Registros de Carga</h4>
-              <div className="text-sm">
-                <p><strong>Total registros:</strong> {data.registros.length}</p>
-                <div className="mt-2 space-y-2 max-h-32 overflow-y-auto">
-                  {data.registros.slice(0, 3).map((registro: any, index: number) => (
-                    <div key={index} className="border-l-2 border-orange-400 pl-2">
-                      <p><strong>Registro {registro.numero_registro || index + 1}:</strong></p>
-                      <p className="text-xs">Bruto: {registro.peso_bruto} | Neto: {registro.peso_neto} | Canastillas: {registro.canastillas}</p>
-                    </div>
-                  ))}
-                  {data.registros.length > 3 && <p className="text-gray-500">... y {data.registros.length - 3} registros más</p>}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-    
-    // Formato genérico para otros tipos de documentos
-    else {
-      return (
-        <div className="space-y-4">
-          <div className="bg-gray-50 dark:bg-gray-900/20 p-3 rounded">
-            <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">📄 Información Extraída</h4>
-            <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-              {JSON.stringify(data, null, 2)}
-            </pre>
-          </div>
-        </div>
-      );
-    }
+    // Si no hay datos en totales, mostrar mensaje
+    return (
+      <div className="text-center py-4">
+        <p className="text-gray-500 dark:text-gray-400">No se pudieron extraer los datos específicos del documento</p>
+      </div>
+    );
   };
 
   if (!isMounted) {
@@ -371,13 +539,8 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
   }
 
   return (
-    <div className="w-full max-w-4xl mx-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden">
-      <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
-        <h2 className="text-2xl font-bold text-white mb-2">📸 Análisis de Documentos</h2>
-        <p className="text-blue-100">Captura o carga imágenes de control de fruto y mallas para análisis automático</p>
-      </div>
-
-      <div className="p-6">
+    <div className="w-full max-w-4xl mx-auto">
+      <div className="space-y-6">
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -396,30 +559,31 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
-              <div>
-                <h3 className="text-lg font-semibold text-red-800 dark:text-red-200">Error</h3>
-                <p className="text-red-700 dark:text-red-300">{error}</p>
-              </div>
+              <p className="text-red-800 dark:text-red-200 font-medium">{error}</p>
             </div>
-            <div className="mt-4 flex gap-3">
-              <button
-                onClick={startCamera}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-all flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+          </div>
+        )}
+
+        {/* Success Message */}
+        {showSuccess && (
+          <div className="mb-6 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-6 text-center">
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-16 h-16 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+                <svg className="w-8 h-8 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Intentar Cámara
-              </button>
-              <button
-                onClick={triggerFileUpload}
-                className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-medium rounded-lg transition-all flex items-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-                Cargar Archivo
-              </button>
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-green-800 dark:text-green-200 mb-2">
+                  ✅ ¡Datos Enviados Exitosamente!
+                </h3>
+                <p className="text-green-600 dark:text-green-300 mb-2">
+                  Los datos han sido guardados en la base de datos correctamente
+                </p>
+                <p className="text-sm text-green-500 dark:text-green-400">
+                  Regresando al inicio en unos segundos...
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -437,15 +601,8 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
             />
             
             {isStreaming ? (
-              <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
-                <button
-                  onClick={capturePhoto}
-                  className="w-16 h-16 bg-white hover:bg-gray-100 border-4 border-blue-500 rounded-full shadow-lg transition-all transform hover:scale-105 flex items-center justify-center"
-                >
-                  <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  </svg>
-                </button>
+              <div className="relative">
+                {/* Solo mostrar el video sin botones superpuestos */}
               </div>
             ) : (
               <div className="h-64 flex items-center justify-center">
@@ -479,6 +636,34 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                 </div>
               </div>
             )}
+            
+            {/* Options below camera when streaming */}
+            {isStreaming && (
+              <div className="bg-white dark:bg-gray-700 p-4 border-t border-gray-200 dark:border-gray-600">
+                <div className="text-center space-y-3">
+                  <div className="flex justify-center gap-3">
+                    <button
+                      onClick={capturePhoto}
+                      className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-all flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                      </svg>
+                      Tomar Foto
+                    </button>
+                    <button
+                      onClick={triggerFileUpload}
+                      className="px-6 py-2 bg-orange-500 hover:bg-orange-600 text-white font-medium rounded-lg transition-all flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                      Cargar Archivo
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -498,11 +683,16 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 text-center">
                 <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
                 <h3 className="text-lg font-semibold text-blue-800 dark:text-blue-200 mb-2">
-                  🔍 Analizando Documento...
+                  ⚡ Análisis Rápido en Proceso...
                 </h3>
-                <p className="text-blue-600 dark:text-blue-300">
-                  La IA está extrayendo toda la información de la imagen
+                <p className="text-blue-600 dark:text-blue-300 text-sm">
+                  Extrayendo solo los 3 datos específicos • Optimizado para velocidad
                 </p>
+                <div className="mt-3">
+                  <div className="text-xs text-blue-500 dark:text-blue-400">
+                    🗜️ Imagen comprimida • 🎯 Análisis dirigido • ⚡ Respuesta rápida
+                  </div>
+                </div>
               </div>
             )}
 
@@ -517,7 +707,7 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                   </svg>
-                  Enviar Data
+                  Analizar Data
                 </button>
                 
                 <div className="flex items-center gap-2 justify-center">
@@ -562,59 +752,50 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
                   {renderAnalysisResults()}
                 </div>
                 
-                <div className="flex gap-3 justify-center flex-wrap">
+                <div className="flex flex-col gap-4 justify-center items-center">
+                  {/* Botón principal grande para enviar a base de datos */}
                   <button
-                    onClick={() => {
-                      const dataToShare = typeof analysisResult === 'object' ? JSON.stringify(analysisResult, null, 2) : analysisResult;
-                      navigator.clipboard.writeText(dataToShare);
-                      alert('📋 Información copiada al portapapeles');
-                    }}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                    onClick={sendToDatabase}
+                    disabled={isSending || !analysisResult}
+                    className="px-8 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-lg rounded-xl transition-all transform hover:scale-105 shadow-lg flex items-center gap-3"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    Copiar
+                    {isSending ? (
+                      <>
+                        <div className="animate-spin w-6 h-6 border-2 border-white border-t-transparent rounded-full"></div>
+                        Enviando...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                        </svg>
+                        Enviar a Base de Datos
+                      </>
+                    )}
                   </button>
                   
-                  <button
-                    onClick={() => {
-                      const dataToDownload = typeof analysisResult === 'object' ? JSON.stringify(analysisResult, null, 2) : analysisResult;
-                      const blob = new Blob([dataToDownload], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const link = document.createElement('a');
-                      link.href = url;
-                      link.download = `control-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
-                      link.click();
-                      URL.revokeObjectURL(url);
-                    }}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    Descargar
-                  </button>
-                  
-                  <button
-                    onClick={triggerFileUpload}
-                    className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                    </svg>
-                    Otra Imagen
-                  </button>
-                  
-                  <button
-                    onClick={resetPhoto}
-                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                    </svg>
-                    Nueva Foto
-                  </button>
+                  {/* Botones secundarios más pequeños */}
+                  <div className="flex gap-3 flex-wrap justify-center">
+                    <button
+                      onClick={triggerFileUpload}
+                      className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                      Otra Imagen
+                    </button>
+                    
+                    <button
+                      onClick={resetPhoto}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white font-medium rounded-lg transition-all flex items-center gap-2 text-sm"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                      </svg>
+                      Nueva Foto
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
