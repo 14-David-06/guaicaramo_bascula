@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       frequency_penalty: 0,
       presence_penalty: 0
     });
-
+ 
     // Ejecutar con timeout AGRESIVO
     try {
       const analysisResponse = await Promise.race([analysisPromise, timeoutPromise]) as any;
