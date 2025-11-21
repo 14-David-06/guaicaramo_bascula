@@ -375,7 +375,9 @@ export default function Camera({ onPhotoCapture }: CameraProps) {
           total_racimos: editableValues.total_racimos
         },
         // Agregar información del tipo seleccionado para la lógica de backend
-        mallas: selectedDocumentType === 'Malla Fruto' ? [{}] : undefined
+        mallas: selectedDocumentType === 'Malla Fruto' ? [{}] : undefined,
+        // Incluir la imagen para subir a S3
+        image: capturedPhoto
       };
 
       console.log('Enviando a base de datos:', dataToSend);

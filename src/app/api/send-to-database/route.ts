@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import AWS from 'aws-sdk';
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const BASE_ID = process.env.AIRTABLE_BASE_ID;
@@ -13,6 +14,56 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('Enviando datos a Airtable:', analysisData);
+
+    // Subir imagen a S3 si está presente
+    let signedUrl = null;
+    let timestamp = Date.now();
+    if (analysisData.image) {
+      try {
+        console.log('Subiendo imagen a S3...');
+        
+        // Configurar AWS S3
+        const s3 = new AWS.S3({
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+          region: process.env.AWS_REGION || 'us-east-1'
+        });
+
+        // Convertir data URL a buffer
+        const base64Data = analysisData.image.replace(/^data:image\/[a-z]+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        
+        // Generar nombre único para el archivo
+        const fileName = `documento-${timestamp}.jpg`;
+        const bucketName = 'guaicaramo-bascula';
+
+        // Subir a S3
+        const uploadParams = {
+          Bucket: bucketName,
+          Key: fileName,
+          Body: buffer,
+          ContentType: 'image/jpeg',
+          ACL: 'private' // El bucket es privado
+        };
+
+        const uploadResult = await s3.upload(uploadParams).promise();
+        console.log('Imagen subida a S3:', uploadResult.Location);
+
+        // Generar URL firmada (válida por 1 año = 31536000 segundos)
+        const signedUrlParams = {
+          Bucket: bucketName,
+          Key: fileName,
+          Expires: 31536000
+        };
+
+        signedUrl = s3.getSignedUrl('getObject', signedUrlParams);
+        console.log('URL firmada generada:', signedUrl);
+
+      } catch (s3Error) {
+        console.error('Error al subir imagen a S3:', s3Error);
+        // No fallar si hay error en S3, continuar con Airtable
+      }
+    }
 
     // Determinar el tipo de peso basado en el tipo de documento
     let tipoPeso = 'Fruto'; // Default
@@ -100,7 +151,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Preparar datos para Airtable (los 4 campos requeridos)
-    const airtableData = {
+    const airtableData: any = {
       fields: {
         [process.env.AIRTABLE_TIPO_PESO_FIELD]: tipoPeso,
         [process.env.AIRTABLE_PESO_BASCULA_FIELD]: pesoBascula,
@@ -108,6 +159,16 @@ export async function POST(request: NextRequest) {
         [process.env.AIRTABLE_TOTAL_RACIMOS_FIELD]: totalRacimos
       }
     };
+
+    // Agregar URL firmada como adjunto si está disponible
+    if (signedUrl) {
+      airtableData.fields[process.env.AIRTABLE_FORMATO_FIELD!] = [
+        {
+          url: signedUrl,
+          filename: `documento-${timestamp}.jpg`
+        }
+      ];
+    }
 
     console.log('Datos formateados para Airtable:', airtableData);
     console.log('Field IDs utilizados:');
